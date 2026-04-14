@@ -21,12 +21,12 @@ schedules_col = _db["schedules"]
 def _serialize_student(student: dict) -> dict:
     return {
         "id": str(student["_id"]),
-        "name": student["name"],
+        "name": student.get("name", "Unknown"),
         "email": student.get("email"),
-        "roll_number": student["roll_number"],
-        "photo_path": student["photo_path"],
-        "registration_photos": student.get("registration_photos", [student["photo_path"]]),
-        "photo_count": int(student.get("photo_count", 1)),
+        "roll_number": student.get("roll_number", ""),
+        "photo_path": student.get("photo_path", ""),
+        "registration_photos": student.get("registration_photos", [student.get("photo_path", "")]),
+        "photo_count": int(student.get("photo_count", 0)),
         "registered_at": student.get("registered_at"),
     }
 
@@ -80,8 +80,13 @@ def get_teacher_by_email(email: str) -> dict | None:
 
 
 def get_students(include_encodings: bool = False) -> list[dict]:
+    """Retrieves all students, optionally including their facial encodings for matching."""
     projection = None if include_encodings else {"face_encoding": 0}
-    students = list(students_col.find({}, projection).sort("name", 1))
+    
+    # Filter for students that actually HAVE encodings if they are requested
+    query = {"face_encoding": {"$exists": True}} if include_encodings else {}
+    students = list(students_col.find(query, projection).sort("name", 1))
+    
     if include_encodings:
         for student in students:
             student["id"] = str(student["_id"])
@@ -104,34 +109,43 @@ def get_student_by_email(email: str) -> dict | None:
 
 
 def get_student_attendance(student_id: str) -> list[dict]:
-    """Return all attendance sessions, annotated with whether this student was present/absent."""
-    sessions = list(attendance_col.find({}).sort("timestamp", -1))
-    result = []
-    for session in sessions:
-        present_ids = {
-            str(r.get("student_id", ""))
-            for r in session.get("results", [])
-            if r.get("status") == "present"
-        }
-        absent_ids = {
-            str(s.get("student_id", ""))
-            for s in session.get("absent_students", [])
-        }
-        if student_id in present_ids:
-            status = "present"
-        elif student_id in absent_ids:
-            status = "absent"
-        else:
-            continue  # student wasn't part of this session at all
-        result.append({
-            "session_id": session["session_id"],
-            "date": session["date"],
-            "timestamp": session.get("timestamp"),
-            "status": status,
-            "total_present": len(present_ids),
-            "total_absent": len(absent_ids),
-        })
-    return result
+    """Retrieves all attendance records for a student, from both real sessions and simulated check-ins."""
+    try:
+        oid = ObjectId(student_id)
+        # 1. Real sessions where student was present
+        present_sessions = list(attendance_col.find({"results.student_id": oid}))
+        # 2. Real sessions where student was absent
+        absent_sessions = list(attendance_col.find({"absent_students.student_id": oid}))
+        # 3. Simulated records (they were inserted with string IDs usually)
+        sim_records = list(attendance_col.find({"student_id": student_id}))
+        
+        records = []
+        for s in present_sessions:
+            records.append({
+                "timestamp": s["timestamp"].isoformat() if isinstance(s["timestamp"], datetime) else s["timestamp"],
+                "status": "present",
+                "session_id": s.get("session_id"),
+                "method": "Facial Recognition"
+            })
+        for s in absent_sessions:
+            records.append({
+                "timestamp": s["timestamp"].isoformat() if isinstance(s["timestamp"], datetime) else s["timestamp"],
+                "status": "absent",
+                "session_id": s.get("session_id"),
+                "method": "Manual Check"
+            })
+        for r in sim_records:
+            records.append({
+                "timestamp": r["timestamp"].isoformat() if isinstance(r["timestamp"], datetime) else r["timestamp"],
+                "status": r["status"],
+                "method": r.get("method", "Simulation")
+            })
+            
+        records.sort(key=lambda x: str(x["timestamp"]), reverse=True)
+        return records
+    except Exception as e:
+        print(f"Error in get_student_attendance: {e}")
+        return []
 
 
 def update_student_photos(
@@ -164,9 +178,21 @@ def create_attendance_record(record: dict) -> str:
 
 
 def get_sessions() -> list[dict]:
-    sessions = list(attendance_col.find({}).sort("timestamp", -1))
-    for session in sessions:
-        session["id"] = str(session["_id"])
+    """Retrieves all attendance sessions with JSON-friendly serialization."""
+    # Filter for documents that have session_id to ignore individual logs
+    sessions = list(attendance_col.find({"session_id": {"$exists": True}}).sort("timestamp", -1))
+    for s in sessions:
+        s["_id"] = str(s["_id"])
+        if "timestamp" in s and isinstance(s["timestamp"], datetime):
+            s["timestamp"] = s["timestamp"].isoformat()
+        
+        # Robustly serialize nested student_ids in both present and absent lists
+        for key in ["results", "absent_students"]:
+            if key in s and isinstance(s[key], list):
+                for entry in s[key]:
+                    if "student_id" in entry:
+                        entry["student_id"] = str(entry["student_id"])
+                        
     return sessions
 
 

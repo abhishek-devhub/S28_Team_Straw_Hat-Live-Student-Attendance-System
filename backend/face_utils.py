@@ -7,9 +7,24 @@ import face_recognition
 MATCH_TOLERANCE = 0.5
 
 
+def _load_image_robustly(image_path: str) -> np.ndarray:
+    """Load image and ensure it is in 8-bit RGB format, which face_recognition requires."""
+    # Use OpenCV to read because it handles more formats and bit-depths than PIL/dlib
+    img = cv2.imread(image_path)
+    if img is None:
+        raise ValueError(f"Could not load image at {image_path}")
+    
+    # Standardize to 8-bit depth if it's 16-bit or higher
+    if img.dtype != np.uint8:
+        img = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+        
+    # Convert BGR (OpenCV default) to RGB (face_recognition default)
+    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+
 def encode_face(image_path: str) -> np.ndarray:
     """Return exactly one 128-d face encoding for a photo."""
-    image = face_recognition.load_image_file(image_path)
+    image = _load_image_robustly(image_path)
     face_locations = face_recognition.face_locations(image, model="hog")
 
     if len(face_locations) == 0:
@@ -34,11 +49,13 @@ def extract_single_face_encoding(image_path: str) -> list[float]:
 
 
 def detect_faces_and_match(group_photo_path: str, known_students: list[dict], output_folder: str) -> tuple[list[dict], str]:
-    image = face_recognition.load_image_file(group_photo_path)
+    image = _load_image_robustly(group_photo_path)
     face_locations = face_recognition.face_locations(image, model="hog")
     face_encodings = face_recognition.face_encodings(image, face_locations)
 
-    known_encodings = [np.array(s["face_encoding"], dtype=np.float64) for s in known_students]
+    # Filter and convert known encodings, ensuring we skip any invalid records
+    valid_students = [s for s in known_students if "face_encoding" in s and s["face_encoding"] is not None]
+    known_encodings = [np.array(s["face_encoding"], dtype=np.float64) for s in valid_students]
 
     recognition_results: list[dict] = []
     for face_encoding, (top, right, bottom, left) in zip(face_encodings, face_locations):
@@ -51,12 +68,12 @@ def detect_faces_and_match(group_photo_path: str, known_students: list[dict], ou
             best_idx = int(np.argmin(distances)) if len(distances) else None
 
             if best_idx is not None and matches[best_idx]:
-                matched_student = known_students[best_idx]
+                matched_student = valid_students[best_idx]
                 name = matched_student["name"]
 
         recognition_results.append(
             {
-                "student_id": matched_student["_id"] if matched_student else None,
+                "student_id": str(matched_student["_id"]) if matched_student else None,
                 "name": name,
                 "status": "present" if matched_student else "unknown",
                 "bbox": [int(top), int(right), int(bottom), int(left)],
