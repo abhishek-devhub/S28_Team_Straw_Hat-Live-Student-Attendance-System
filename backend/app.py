@@ -23,15 +23,16 @@ from database import (
     get_student_by_email,
     get_student_attendance,
     get_students,
+    update_student_profile,
     get_teacher_by_email,
     update_student_photos,
     create_schedule,
     get_schedules,
     update_schedule,
     delete_schedule,
-    get_student_streak,
     get_weekly_leaderboard,
     get_absence_streak,
+    get_comprehensive_stats,
 )
 from face_utils import average_encodings, detect_faces_and_match, encode_face
 
@@ -132,14 +133,14 @@ def register_student():
             student_id=student_oid,
         )
 
-        return jsonify(
-            {
-                "success": True,
-                "student_id": student_id,
-                "photo_count": len(photo_paths),
-                "message": f"Student registered with {len(photo_paths)} photos",
-            }
-        ), 201
+        return jsonify({
+            "success": True,
+            "message": "Student registered successfully",
+            "student_id": student_id,
+            "photo_count": len(photo_paths),
+            "photo_path": photo_paths[0],
+            "registration_photos": photo_paths
+        }), 201
     except ValueError as exc:
         return jsonify({"success": False, "message": str(exc)}), 400
     except Exception as exc:
@@ -259,6 +260,56 @@ def add_student_photos(student_id):
 @app.route("/api/students", methods=["GET"])
 def list_students():
     return jsonify(get_students(include_encodings=False))
+
+
+@app.route("/api/students/<student_id>", methods=["GET"])
+def get_student_endpoint(student_id):
+    student = get_student_by_id(student_id)
+    if student:
+        return jsonify(student)
+    return jsonify({"success": False, "message": "Student not found"}), 404
+
+
+@app.route("/api/students/<student_id>", methods=["PUT"])
+def update_student(student_id):
+    try:
+        data = request.json or {}
+        success = update_student_profile(
+            student_id, 
+            data.get("name"), 
+            data.get("roll_number") or data.get("rollNumber")
+        )
+        if success:
+            return jsonify({"success": True, "message": "Profile updated successfully"})
+        return jsonify({"success": False, "message": "Student not found or no changes made"}), 404
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@app.route("/api/students/login", methods=["POST"])
+def student_login():
+    try:
+        data = request.json
+        email = data.get("email")
+        if not email:
+            return jsonify({"success": False, "message": "Email is required"}), 400
+        
+        student = get_student_by_email(email)
+        if student:
+            return jsonify({
+                "success": True,
+                "student": {
+                    "id": student["id"],
+                    "name": student["name"],
+                    "email": student["email"],
+                    "roll_number": student["roll_number"],
+                    "photo_path": student["photo_path"],
+                    "registration_photos": student.get("registration_photos", []),
+                    "photo_count": student.get("photo_count", 0)
+                }
+            }), 200
+        return jsonify({"success": False, "message": "Student not found"}), 404
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 @app.route("/api/students/<student_id>", methods=["DELETE"])
@@ -398,32 +449,6 @@ def export_attendance_csv(session_id):
     )
 
 
-@app.route("/api/students/login", methods=["POST"])
-def student_login():
-    data = request.json or {}
-    email = data.get("email", "").strip()
-
-    if not email:
-        return jsonify({"success": False, "message": "Email is required"}), 400
-
-    student = get_student_by_email(email)
-    if not student:
-        return jsonify({"success": False, "message": "No student found with this email"}), 404
-
-    return jsonify({
-        "success": True,
-        "student": {
-            "id": student["id"],
-            "name": student["name"],
-            "email": student.get("email"),
-            "roll_number": student["roll_number"],
-            "photo_path": student["photo_path"],
-            "registration_photos": student.get("registration_photos", []),
-            "photo_count": int(student.get("photo_count", 1)),
-            "registered_at": student.get("registered_at"),
-        }
-    })
-
 
 @app.route("/api/students/<student_id>/attendance", methods=["GET"])
 def student_attendance(student_id):
@@ -453,31 +478,8 @@ def student_attendance(student_id):
 
 @app.route("/api/students/attendance-stats", methods=["GET"])
 def all_student_attendance_stats():
-    students = get_students(include_encodings=False)
-    if not students:
-        return jsonify([])
-        
-    stats = []
-    # Optionally get total sessions length if not derivable from getting student records.
-    # But get_student_attendance gives total for that student.
-    
-    for s in students:
-        sid = str(s.get("id") or s.get("_id", ""))
-        records = get_student_attendance(sid)
-        total = len(records)
-        present = sum(1 for r in records if r["status"] == "present")
-        percentage = round((present / total) * 100, 1) if total > 0 else 0
-        
-        stats.append({
-            "student_id": sid,
-            "name": s["name"],
-            "roll_number": s["roll_number"],
-            "present_count": present,
-            "total_sessions": total,
-            "percentage": percentage
-        })
-        
-    return jsonify(stats)
+    res = get_comprehensive_stats()
+    return jsonify(res["stats"])
 
 
 @app.route("/api/schedules", methods=["GET"])
@@ -524,10 +526,17 @@ def student_gamification(student_id):
         if not student:
             return jsonify({"success": False, "message": "Student not found"}), 404
         
-        streak = get_student_streak(student_id)
-        
-        # Get overall percentage for badges
-        records = get_student_attendance(student_id)
+        # Calculate streaks and attendance safely
+        try:
+            streak = get_student_streak(student_id)
+            records = get_student_attendance(student_id)
+            absence_res = get_absence_streak(student_id)
+        except Exception as inner_exc:
+            print(f"Internal calculation error for student {student_id}: {inner_exc}")
+            streak = 0
+            records = []
+            absence_res = {"streak": 0, "dates": []}
+
         total = len(records)
         present = sum(1 for r in records if r["status"] == "present")
         percentage = round((present / total) * 100, 1) if total > 0 else 0
@@ -544,59 +553,25 @@ def student_gamification(student_id):
             badge = "Bronze"
             next_threshold = 75
             
-        # Get absence streak for warnings
-        absence_res = get_absence_streak(student_id)
-        absence_streak = absence_res["streak"]
+        absence_streak = absence_res.get("streak", 0)
             
         return jsonify({
             "streak": streak,
             "absence_streak": absence_streak,
             "badge": badge,
             "percentage": percentage,
-            "next_threshold": next_threshold
+            "next_threshold": next_threshold,
+            "total_present": present,
+            "total_sessions": total
         }), 200
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+        print(f"Critical error in student_gamification: {e}")
+        return jsonify({"success": False, "message": "Internal server error during gamification calculation"}), 500
 
 @app.route("/api/alerts/escalation", methods=["GET"])
 def escalation_alerts():
-    try:
-        students = get_students()
-        alerts = []
-        for s in students:
-            sid = s.get("id") or str(s.get("_id"))
-            res = get_absence_streak(sid)
-            streak = res["streak"]
-            if streak >= 1:
-                level = "Email"
-                color = "yellow"
-                action = "Day 1 Intervention (Email)"
-                
-                if streak >= 5:
-                    level = "Call Required"
-                    color = "red"
-                    action = "Day 5 Critical (Phone Call)"
-                elif streak >= 3:
-                    level = "SMS"
-                    color = "orange"
-                    action = "Day 3 Escalation (SMS)"
-                
-                alerts.append({
-                    "student_id": sid,
-                    "name": s["name"],
-                    "roll_number": s["roll_number"],
-                    "streak": streak,
-                    "level": level,
-                    "color": color,
-                    "action": action,
-                    "history": res["dates"]
-                })
-        
-        # Sort by streak desc
-        alerts.sort(key=lambda x: x["streak"], reverse=True)
-        return jsonify(alerts), 200
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+    res = get_comprehensive_stats()
+    return jsonify(res["alerts"]), 200
 
 
 if __name__ == "__main__":

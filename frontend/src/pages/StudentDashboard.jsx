@@ -29,10 +29,12 @@ import {
   addStudentPhotos, 
   getSchedules, 
   getLeaderboard, 
-  getStudentGamification 
+  getStudentGamification,
+  updateStudentProfile,
+  getStudent
 } from '../api'
 
-const API_BASE = 'http://localhost:5000'
+const API_BASE = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : 'http://localhost:5000'
 
 export default function StudentDashboard() {
   const navigate = useNavigate()
@@ -57,7 +59,15 @@ export default function StudentDashboard() {
       return
     }
     const parsed = JSON.parse(stored)
+    // Self-healing: Ensure 'id' exists even if it was saved as '_id' in legacy data
+    if (!parsed.id && parsed._id) {
+      parsed.id = parsed._id
+      localStorage.setItem('student', JSON.stringify(parsed))
+    }
+    
     setStudent(parsed)
+    setEditName(parsed.name || '')
+    setEditRollNumber(parsed.roll_number || '')
 
     const loadData = async () => {
       try {
@@ -68,9 +78,9 @@ export default function StudentDashboard() {
           getLeaderboard()
         ])
         setAttendance(attRes.data)
-        setSchedules(schedRes.data)
+        setSchedules(schedRes.data || [])
         setGamification(gamificationRes.data)
-        setLeaderboard(leaderboardRes.data)
+        setLeaderboard(leaderboardRes.data || [])
       } catch (err) {
         console.error(err)
         toast.error('Failed to load dashboard data')
@@ -91,6 +101,7 @@ export default function StudentDashboard() {
     const file = e.target.files?.[0]
     if (!file) return
 
+    if (photoPreview) URL.revokeObjectURL(photoPreview)
     setPhotoPreview(URL.createObjectURL(file))
     setSelectedPhoto(file)
   }
@@ -114,6 +125,7 @@ export default function StudentDashboard() {
       localStorage.setItem('student', JSON.stringify(updatedStudent))
 
       toast.success('Photo added successfully')
+      if (photoPreview) URL.revokeObjectURL(photoPreview)
       setSelectedPhoto(null)
       setPhotoPreview(null)
       if (fileInputRef.current) fileInputRef.current.value = ''
@@ -134,6 +146,43 @@ export default function StudentDashboard() {
     }
   }, [attendance])
 
+  const [editName, setEditName] = useState('')
+  const [editRollNumber, setEditRollNumber] = useState('')
+  const [isEditing, setIsEditing] = useState(false)
+  const [updatingProfile, setUpdatingProfile] = useState(false)
+
+  const handleUpdateProfile = async (e) => {
+    e.preventDefault()
+    if (!editName || !editRollNumber) return toast.error('Name and Roll Number are required')
+
+    try {
+      setUpdatingProfile(true)
+      const currentId = student.id || student._id
+      if (!currentId) throw new Error('Student ID not found. Please re-login.')
+
+      await updateStudentProfile(currentId, { 
+        name: editName, 
+        roll_number: editRollNumber 
+      })
+
+      // Deep Sync: Fetch the absolute latest student info from the server
+      const syncRes = await getStudent(student.id)
+      if (syncRes.data) {
+        setStudent(syncRes.data)
+        localStorage.setItem('student', JSON.stringify(syncRes.data))
+        setEditName(syncRes.data.name)
+        setEditRollNumber(syncRes.data.roll_number)
+      }
+      
+      setIsEditing(false)
+      toast.success('Profile updated successfully')
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Failed to update profile')
+    } finally {
+      setUpdatingProfile(false)
+    }
+  }
+
   const streakInfo = useMemo(() => {
     if (!attendance?.records?.length) return { current: 0 }
     let current = 0
@@ -143,6 +192,19 @@ export default function StudentDashboard() {
     }
     return { current }
   }, [attendance])
+
+  const photoUrl = useMemo(() => {
+    if (!student) return null
+    // 1. Try the explicit primary photo path
+    if (student.photo_path) return `${API_BASE}/static/${student.photo_path}`
+    
+    // 2. Fallback to the first registration photo if primary is missing (Legacy recovery)
+    if (student.registration_photos?.length > 0) {
+      return `${API_BASE}/static/${student.registration_photos[0]}`
+    }
+    
+    return null
+  }, [student, API_BASE])
 
   if (loading) {
     return (
@@ -156,10 +218,6 @@ export default function StudentDashboard() {
 
   const photoCount = student.photo_count || 1;
   const canUploadMore = photoCount < 5;
-
-  const photoUrl = student.photo_path
-    ? `${API_BASE}/static/${student.photo_path}`
-    : null
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
@@ -205,7 +263,7 @@ export default function StudentDashboard() {
         )}
 
         {/* ─── Critical Absence Warning ─── */}
-        {gamification?.absence_streak > 3 && (
+        {gamification && gamification.absence_streak > 3 && (
           <div className="mb-6 bg-rose-50 border-2 border-rose-200 rounded-xl p-5 flex items-start gap-4 shadow-md animate-bounce-subtle">
             <div className="bg-rose-100 text-rose-600 p-3 rounded-full flex-shrink-0">
               <AlertOctagon size={28} />
@@ -213,7 +271,7 @@ export default function StudentDashboard() {
             <div>
               <h3 className="text-lg font-bold text-rose-900 mb-1">Critical Absence Warning</h3>
               <p className="text-rose-700 font-medium leading-relaxed">
-                You have been absent for <span className="font-extrabold">{gamification.absence_streak} consecutive sessions</span>. 
+                You have been absent for <span className="font-extrabold">{gamification?.absence_streak || 0} consecutive sessions</span>. 
                 A notification has been sent to the faculty, and your teacher is required to contact your parents/guardians immediately.
               </p>
               <p className="text-rose-600 text-sm mt-2 flex items-center gap-1 font-semibold uppercase tracking-wider">
@@ -246,7 +304,7 @@ export default function StudentDashboard() {
               <span className="flex items-center gap-1">
                 <span className="font-semibold text-slate-700">Email:</span> {student.email}
               </span>
-              {gamification?.badge !== 'None' && (
+              {gamification && gamification.badge && gamification.badge !== 'None' && (
                 <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold border ${
                   gamification.badge === 'Gold' ? 'bg-amber-50 text-amber-700 border-amber-200' :
                   gamification.badge === 'Silver' ? 'bg-slate-50 text-slate-700 border-slate-200' :
@@ -255,7 +313,7 @@ export default function StudentDashboard() {
                   <Trophy size={12} /> {gamification.badge} Badge
                 </span>
               )}
-              {gamification?.streak > 0 && (
+              {gamification && gamification.streak > 0 && (
                 <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold bg-rose-50 text-rose-600 border border-rose-100">
                   <TrendingUp size={12} /> {gamification.streak} Day Streak
                 </span>
@@ -416,7 +474,7 @@ export default function StudentDashboard() {
                      <Star className="text-amber-500" size={18} /> Weekly Top Performers
                    </h3>
                    <div className="space-y-3">
-                      {leaderboard.length === 0 ? (
+                      {(!leaderboard || leaderboard.length === 0) ? (
                         <p className="text-slate-400 text-xs text-center py-4 italic">No rankings available yet this week.</p>
                       ) : (
                         leaderboard.map((entry, idx) => (
@@ -532,7 +590,74 @@ export default function StudentDashboard() {
           )}
 
           {activeTab === 'profile' && (
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+            <div className="space-y-6">
+              {/* Basic Profile Edit */}
+              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h3 className="text-lg font-bold text-slate-800 mb-1">Account Information</h3>
+                    <p className="text-slate-500 text-sm">Correct any mistakes in your registration details.</p>
+                  </div>
+                  {!isEditing && (
+                    <button 
+                      onClick={() => setIsEditing(true)}
+                      className="px-4 py-2 text-sm font-semibold text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors"
+                    >
+                      Edit Info
+                    </button>
+                  )}
+                </div>
+
+                <form onSubmit={handleUpdateProfile} className="space-y-4">
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Display Name</label>
+                      <input 
+                        disabled={!isEditing}
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        className={`w-full p-2.5 rounded-lg border text-sm transition-all ${isEditing ? 'border-indigo-200 focus:ring-2 focus:ring-indigo-100' : 'border-slate-100 bg-slate-50 text-slate-500 cursor-not-allowed'}`}
+                        placeholder="Your full name"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Roll Number / ID</label>
+                      <input 
+                        disabled={!isEditing}
+                        value={editRollNumber}
+                        onChange={(e) => setEditRollNumber(e.target.value)}
+                        className={`w-full p-2.5 rounded-lg border text-sm transition-all ${isEditing ? 'border-indigo-200 focus:ring-2 focus:ring-indigo-100' : 'border-slate-100 bg-slate-50 text-slate-500 cursor-not-allowed'}`}
+                        placeholder="Academic ID"
+                      />
+                    </div>
+                  </div>
+
+                  {isEditing && (
+                    <div className="flex justify-end gap-3 pt-2">
+                       <button 
+                        type="button" 
+                        onClick={() => {
+                          setIsEditing(false)
+                          setEditName(student.name)
+                          setEditRollNumber(student.roll_number)
+                        }}
+                        className="px-4 py-2 text-sm font-bold text-slate-600 hover:text-slate-800"
+                       >
+                         Cancel
+                       </button>
+                       <button 
+                         type="submit"
+                         disabled={updatingProfile}
+                         className="px-6 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 shadow-sm disabled:opacity-50"
+                       >
+                         {updatingProfile ? 'Saving...' : 'Save Changes'}
+                       </button>
+                    </div>
+                  )}
+                </form>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
               <div className="mb-6">
                 <h3 className="text-lg font-bold text-slate-800 mb-1">Face Database</h3>
                 <p className="text-slate-500 text-sm">Upload clear photos of yourself to improve facial recognition accuracy. ({photoCount}/5 utilized)</p>
@@ -641,8 +766,9 @@ export default function StudentDashboard() {
                 </div>
               </div>
             </div>
-          )}
-        </div>
+          </div>
+        )}
+      </div>
       </main>
     </div>
   )

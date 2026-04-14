@@ -4,11 +4,13 @@ export default function StudentCard({ student, onDelete, onAddPhotos }) {
   const photoCount = student.photo_count || 1
   const badgeClass = photoCount >= 3 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'
 
+  const API_BASE = import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : 'http://localhost:5000'
+
   return (
     <div className="bg-white rounded-xl shadow p-4 border border-slate-200">
       <div className="relative">
         <img
-          src={`http://localhost:5000/static/${student.photo_path}`}
+          src={`${API_BASE}/static/${student.photo_path}`}
           alt={student.name}
           className="h-44 w-full object-cover rounded-lg"
         />

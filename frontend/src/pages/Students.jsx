@@ -54,7 +54,14 @@ export default function Students() {
 
   const assignPhoto = async (index, file) => {
     if (!file) return
-    setSlots((prev) => prev.map((s, i) => (i === index ? { ...s, file, preview: URL.createObjectURL(file), status: 'validating' } : s)))
+    const previewUrl = URL.createObjectURL(file)
+    setSlots((prev) => prev.map((s, i) => {
+      if (i === index) {
+        if (s.preview) URL.revokeObjectURL(s.preview)
+        return { ...s, file, preview: previewUrl, status: 'validating' }
+      }
+      return s
+    }))
 
     const formData = new FormData()
     formData.append('photo', file)
@@ -84,6 +91,7 @@ export default function Students() {
     } catch (err) {
       toast.error(err.response?.data?.message || 'Failed to add photos')
     } finally {
+      slots.forEach(s => s.preview && URL.revokeObjectURL(s.preview))
       setSaving(false)
     }
   }
@@ -109,7 +117,7 @@ export default function Students() {
               {slots.map((slot, index) => (
                 <label key={index} className="h-28 rounded border bg-slate-50 overflow-hidden cursor-pointer text-xs flex items-center justify-center">
                   {slot.preview ? (
-                    <img src={slot.preview} alt="preview" className="h-full w-full object-cover" />
+                    <img src={slot.preview} alt={`Upload preview ${index + 1}`} className="h-full w-full object-cover" />
                   ) : (
                     <span>Upload {index + 1}</span>
                   )}
@@ -120,8 +128,11 @@ export default function Students() {
             <div className="text-xs text-slate-600">
               {slots.filter((s) => s.status === 'valid').length} valid / {slots.filter((s) => s.status === 'invalid').length} invalid
             </div>
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setModalOpen(false)} className="px-3 py-2 rounded bg-slate-200">Cancel</button>
+            <div className="flex justify-end gap-2 text-sm font-medium">
+              <button onClick={() => {
+                slots.forEach(s => s.preview && URL.revokeObjectURL(s.preview))
+                setModalOpen(false)
+              }} className="px-5 py-2 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors">Cancel</button>
               <button onClick={submitAdditionalPhotos} disabled={saving} className="px-3 py-2 rounded bg-green-500 text-white disabled:opacity-60">
                 {saving ? 'Saving...' : 'Add Photos'}
               </button>
