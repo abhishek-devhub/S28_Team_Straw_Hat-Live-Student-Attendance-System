@@ -1236,6 +1236,6 @@ A: Yes, completely open-source under MIT License.
 
 ---
 
-*Last Updated: February 2024*
+*Last Updated: April 2026*
 
 **Built with ❤️ for educational institutions and organizations worldwide**
