@@ -15,4 +15,7 @@ export const getSessions = () => api.get('/attendance/sessions')
 export const getSession = (sessionId) => api.get(`/attendance/session/${sessionId}`)
 export const exportSessionCsvUrl = (sessionId) => `${api.defaults.baseURL}/attendance/export/${sessionId}`
 
+export const studentLogin = (email) => api.post('/students/login', { email })
+export const getStudentAttendance = (studentId) => api.get(`/students/${studentId}/attendance`)
+
 export default api

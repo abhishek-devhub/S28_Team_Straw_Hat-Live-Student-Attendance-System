@@ -95,6 +95,44 @@ def get_student_by_id(student_id: str) -> dict | None:
     return students_col.find_one({"_id": ObjectId(student_id)})
 
 
+def get_student_by_email(email: str) -> dict | None:
+    student = students_col.find_one({"email": email})
+    if student:
+        student["id"] = str(student["_id"])
+    return student
+
+
+def get_student_attendance(student_id: str) -> list[dict]:
+    """Return all attendance sessions, annotated with whether this student was present/absent."""
+    sessions = list(attendance_col.find({}).sort("timestamp", -1))
+    result = []
+    for session in sessions:
+        present_ids = {
+            str(r.get("student_id", ""))
+            for r in session.get("results", [])
+            if r.get("status") == "present"
+        }
+        absent_ids = {
+            str(s.get("student_id", ""))
+            for s in session.get("absent_students", [])
+        }
+        if student_id in present_ids:
+            status = "present"
+        elif student_id in absent_ids:
+            status = "absent"
+        else:
+            continue  # student wasn't part of this session at all
+        result.append({
+            "session_id": session["session_id"],
+            "date": session["date"],
+            "timestamp": session.get("timestamp"),
+            "status": status,
+            "total_present": len(present_ids),
+            "total_absent": len(absent_ids),
+        })
+    return result
+
+
 def update_student_photos(
     student_id: str,
     averaged_encoding: list[float],

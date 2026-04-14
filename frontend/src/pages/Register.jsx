@@ -67,6 +67,16 @@ export default function Register() {
       const res = await registerStudent(formData)
       clearInterval(timer)
       setProgress(100)
+      // Save student info to localStorage for the dashboard
+      const studentData = {
+        id: res?.data?.student_id,
+        name,
+        email,
+        roll_number: rollNumber,
+        photo_count: res?.data?.photo_count || files.length,
+        registered_at: new Date().toISOString(),
+      }
+      localStorage.setItem('student', JSON.stringify(studentData))
       toast.success(`Registered with ${res?.data?.photo_count || files.length} photos`)
       navigate('/student-dashboard')
     } catch (err) {

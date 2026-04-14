@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { GraduationCap, Users } from 'lucide-react'
+import { GraduationCap, Users, LogIn } from 'lucide-react'
 
 export default function LandingPage() {
   return (
@@ -34,6 +34,18 @@ export default function LandingPage() {
           </div>
           <h2 className="text-2xl font-semibold mb-2">Teacher</h2>
           <p className="text-center text-slate-500">Register to manage students and track attendance.</p>
+        </Link>
+      </div>
+
+      {/* Already registered student */}
+      <div className="flex items-center gap-2 text-slate-400">
+        <span className="text-sm">Already registered?</span>
+        <Link 
+          to="/student-login" 
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors"
+        >
+          <LogIn size={16} />
+          Student Login
         </Link>
       </div>
     </div>

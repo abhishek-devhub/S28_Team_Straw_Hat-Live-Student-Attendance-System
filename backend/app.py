@@ -20,6 +20,8 @@ from database import (
     get_session_by_session_id,
     get_sessions,
     get_student_by_id,
+    get_student_by_email,
+    get_student_attendance,
     get_students,
     update_student_photos,
 )
@@ -359,6 +361,59 @@ def export_attendance_csv(session_id):
         as_attachment=True,
         download_name=f"attendance_{session_id}.csv",
     )
+
+
+@app.route("/api/students/login", methods=["POST"])
+def student_login():
+    data = request.json or {}
+    email = data.get("email", "").strip()
+
+    if not email:
+        return jsonify({"success": False, "message": "Email is required"}), 400
+
+    student = get_student_by_email(email)
+    if not student:
+        return jsonify({"success": False, "message": "No student found with this email"}), 404
+
+    return jsonify({
+        "success": True,
+        "student": {
+            "id": student["id"],
+            "name": student["name"],
+            "email": student.get("email"),
+            "roll_number": student["roll_number"],
+            "photo_path": student["photo_path"],
+            "registration_photos": student.get("registration_photos", []),
+            "photo_count": int(student.get("photo_count", 1)),
+            "registered_at": student.get("registered_at"),
+        }
+    })
+
+
+@app.route("/api/students/<student_id>/attendance", methods=["GET"])
+def student_attendance(student_id):
+    try:
+        student = get_student_by_id(student_id)
+    except Exception:
+        return jsonify({"success": False, "message": "Invalid student id"}), 400
+
+    if not student:
+        return jsonify({"success": False, "message": "Student not found"}), 404
+
+    records = get_student_attendance(student_id)
+    total = len(records)
+    present = sum(1 for r in records if r["status"] == "present")
+    absent = total - present
+    percentage = round((present / total) * 100, 1) if total > 0 else 0
+
+    return jsonify({
+        "student_id": student_id,
+        "total_sessions": total,
+        "present_count": present,
+        "absent_count": absent,
+        "attendance_percentage": percentage,
+        "records": records,
+    })
 
 
 if __name__ == "__main__":

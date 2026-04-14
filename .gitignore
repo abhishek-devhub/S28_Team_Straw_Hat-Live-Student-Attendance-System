@@ -1,9 +1,27 @@
-venv/
+# Python
 __pycache__/
+*.py[cod]
 *.db
-static/uploads/
-static/student_photos/
-.DS_Store
+*.whl
+
+# Virtual environments
+venv/
+.venv/
+backend/.venv/
+
+# Environment variables
 .env
 backend/.env
+
+# Uploaded files (generated at runtime)
+backend/static/uploads/
+backend/static/student_photos/
+
+# Node / Frontend
+node_modules/
 frontend/node_modules/
+frontend/dist/
+
+# OS files
+.DS_Store
+Thumbs.db
