@@ -24,26 +24,32 @@ export default function TeacherDashboard() {
   const [stats, setStats] = useState([])
   const [alerts, setAlerts] = useState([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+ 
+  const loadData = async (isManual = false) => {
+    try {
+      if (isManual) setRefreshing(true)
+      const t = Date.now()
+      const [studentsRes, sessionsRes, statsRes, alertsRes] = await Promise.all([
+        getStudents({ t }),
+        getSessions({ t }),
+        getStudentAttendanceStats({ t }),
+        getEscalationAlerts({ t })
+      ])
+      setStudents(studentsRes.data || [])
+      setSessions(sessionsRes.data || [])
+      setStats(statsRes.data || [])
+      setAlerts(alertsRes.data || [])
+      if (isManual) toast.success('Dashboard updated')
+    } catch {
+      toast.error('Failed to load dashboard data')
+    } finally {
+      if (isManual) setRefreshing(false)
+      setLoading(false)
+    }
+  }
 
   useEffect(() => {
-    const loadData = async () => {
-      try {
-        const [studentsRes, sessionsRes, statsRes, alertsRes] = await Promise.all([
-          getStudents(),
-          getSessions(),
-          getStudentAttendanceStats(),
-          getEscalationAlerts()
-        ])
-        setStudents(studentsRes.data)
-        setSessions(sessionsRes.data)
-        setStats(statsRes.data)
-        setAlerts(alertsRes.data)
-      } catch {
-        toast.error('Failed to load dashboard data')
-      } finally {
-        setLoading(false)
-      }
-    }
     loadData()
   }, [])
 
@@ -52,19 +58,19 @@ export default function TeacherDashboard() {
   // --- CHART 1: Attendance Over Time ---
   const lineChartData = useMemo(() => {
     // Last 10 sessions, but chronological (oldest to newest left to right)
-    return sessions.slice(0, 10).reverse().map(s => ({
+    return [...sessions].slice(0, 10).reverse().map(s => ({
       date: new Date(s.timestamp).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-      present: s.present_count,
+      present: s.present_count || 0,
     }))
   }, [sessions])
 
   // --- CHART 2: Per Student Attendance Rate ---
   const barChartData = useMemo(() => {
-    return stats.map(s => ({
-      name: s.name,
-      percentage: s.percentage,
-      present_count: s.present_count,
-      total_sessions: s.total_sessions
+    return (stats || []).map(s => ({
+      name: s.name || 'Unknown',
+      percentage: s.percentage || 0,
+      present_count: s.present_count || 0,
+      total_sessions: s.total_sessions || 0
     }))
   }, [stats])
 
@@ -119,17 +125,33 @@ export default function TeacherDashboard() {
 
   return (
     <div className="space-y-8 pb-10">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-800">Dashboard</h1>
-        <div className="mt-4 grid sm:grid-cols-3 gap-4">
-          <StatCard title="Total Students" value={students.length} />
-          <StatCard title="Sessions Taken" value={sessions.length} />
-          <StatCard title="Last Session Date" value={lastSessionDate} />
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-slate-800">Faculty Dashboard</h1>
+          <p className="text-slate-500 text-sm mt-1">Real-time attendance analytics and intervention tracks.</p>
         </div>
-        <div className="flex gap-3 mt-4">
-          <Link to="/take-attendance" className="px-4 py-2 rounded-lg bg-green-500 hover:bg-green-600 transition-colors text-white font-medium">Take Attendance</Link>
-          <Link to="/register/student" className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-900 transition-colors text-white font-medium">Register Student</Link>
+        <div className="flex gap-3 h-fit">
+          <button 
+            onClick={() => loadData(true)} 
+            disabled={refreshing}
+            className={`p-2.5 rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-all ${refreshing ? 'animate-spin' : ''}`}
+            title="Refresh Data"
+          >
+             <History size={20} />
+          </button>
+          <Link to="/take-attendance" className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 transition-all text-white font-bold shadow-lg shadow-indigo-100 flex items-center gap-2">
+            Take Attendance
+          </Link>
+          <Link to="/register/student" className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-900 transition-all text-white font-bold shadow-lg shadow-slate-200 flex items-center gap-2">
+            Register Student
+          </Link>
         </div>
+      </div>
+
+      <div className="grid sm:grid-cols-3 gap-4">
+        <StatCard title="Total Students" value={students.length} />
+        <StatCard title="Sessions Taken" value={sessions.length} />
+        <StatCard title="Last Session Date" value={lastSessionDate} />
       </div>
 
       <div>
@@ -234,7 +256,7 @@ export default function TeacherDashboard() {
                       axisLine={false} 
                       tickLine={false} 
                       tick={{ fill: '#64748b', fontSize: 12 }}
-                      domain={[0, students.length]}
+                      domain={[0, Math.max(1, students.length)]}
                     />
                     <Tooltip
                       contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}

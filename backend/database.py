@@ -19,6 +19,7 @@ schedules_col = _db["schedules"]
 
 
 def _serialize_student(student: dict) -> dict:
+    """Safely converts a MongoDB student document into a JSON-serializable dictionary."""
     return {
         "id": str(student["_id"]),
         "name": student.get("name", "Unknown"),
@@ -27,7 +28,7 @@ def _serialize_student(student: dict) -> dict:
         "photo_path": student.get("photo_path", ""),
         "registration_photos": student.get("registration_photos", [student.get("photo_path", "")]),
         "photo_count": int(student.get("photo_count", 0)),
-        "registered_at": student.get("registered_at"),
+        "registered_at": student.get("registered_at").isoformat() if student.get("registered_at") else None,
     }
 
 
@@ -98,7 +99,36 @@ def get_students(include_encodings: bool = False) -> list[dict]:
 
 
 def get_student_by_id(student_id: str) -> dict | None:
-    return students_col.find_one({"_id": ObjectId(student_id)})
+    """Fetches and serializes a student document by ID."""
+    try:
+        student = students_col.find_one({"_id": ObjectId(student_id)})
+        return _serialize_student(student) if student else None
+    except:
+        return None
+
+def update_student_profile(student_id: str, name: str, roll_number: str) -> bool:
+    """Updates a student's basic profile details securely with ID validation."""
+    try:
+        # Validate ObjectId before use to prevent server-side crashes
+        from bson.errors import InvalidId
+        if not student_id or not isinstance(student_id, str):
+            return False
+            
+        oid = ObjectId(student_id)
+        
+        # First check if the student exists
+        student = students_col.find_one({"_id": oid})
+        if not student:
+            return False
+            
+        # Update the fields
+        students_col.update_one(
+            {"_id": oid},
+            {"$set": {"name": name, "roll_number": roll_number}}
+        )
+        return True
+    except (InvalidId, TypeError):
+        return False
 
 
 def get_student_by_email(email: str) -> dict | None:
@@ -112,12 +142,15 @@ def get_student_attendance(student_id: str) -> list[dict]:
     """Retrieves all attendance records for a student, from both real sessions and simulated check-ins."""
     try:
         oid = ObjectId(student_id)
+        # Search for both ObjectId and string versions of the ID to handle mixed-type legacy data
+        id_search = [oid, student_id]
+        
         # 1. Real sessions where student was present
-        present_sessions = list(attendance_col.find({"results.student_id": oid}))
+        present_sessions = list(attendance_col.find({"results.student_id": {"$in": id_search}}))
         # 2. Real sessions where student was absent
-        absent_sessions = list(attendance_col.find({"absent_students.student_id": oid}))
-        # 3. Simulated records (they were inserted with string IDs usually)
-        sim_records = list(attendance_col.find({"student_id": student_id}))
+        absent_sessions = list(attendance_col.find({"absent_students.student_id": {"$in": id_search}}))
+        # 3. Simulated records
+        sim_records = list(attendance_col.find({"student_id": {"$in": id_search}}))
         
         records = []
         for s in present_sessions:
@@ -141,7 +174,8 @@ def get_student_attendance(student_id: str) -> list[dict]:
                 "method": r.get("method", "Simulation")
             })
             
-        records.sort(key=lambda x: str(x["timestamp"]), reverse=True)
+        # Sort by timestamp, handling missing values gracefully
+        records.sort(key=lambda x: str(x.get("timestamp", "0")), reverse=True)
         return records
     except Exception as e:
         print(f"Error in get_student_attendance: {e}")
@@ -303,3 +337,120 @@ def get_absence_streak(student_id: str) -> dict:
             break
     return {"streak": streak, "dates": dates}
 
+def get_comprehensive_stats() -> dict:
+    """
+    Optimized: Fetches all students and attendance sessions in exactly 2 queries.
+    Computes all stats and streaks in-memory (O(N+M) instead of O(N*M)).
+    """
+    students = list(students_col.find({}, {"name": 1, "roll_number": 1}))
+    # Get all real sessions and simulated records
+    all_attendance = list(attendance_col.find().sort("timestamp", -1))
+    
+    student_record_map = {str(s["_id"]): [] for s in students}
+    
+    for session in all_attendance:
+        # 1. Check real sessions (results and absent_students)
+        if "results" in session:
+            # Map present students
+            for res in session.get("results", []):
+                sid = str(res.get("student_id", ""))
+                if sid in student_record_map:
+                    student_record_map[sid].append({
+                        "timestamp": session["timestamp"],
+                        "status": res.get("status", "unknown")
+                    })
+            # Map absent students
+            for abs_s in session.get("absent_students", []):
+                sid = str(abs_s.get("student_id", ""))
+                if sid in student_record_map:
+                    student_record_map[sid].append({
+                        "timestamp": session["timestamp"],
+                        "status": "absent"
+                    })
+        # 2. Check individual/simulated records
+        elif "student_id" in session:
+            sid = str(session["student_id"])
+            if sid in student_record_map:
+                student_record_map[sid].append({
+                    "timestamp": session["timestamp"],
+                    "status": session.get("status", "unknown")
+                })
+
+    # Compute stats for every student
+    stats = []
+    alerts = []
+    
+    for s in students:
+        sid = str(s["_id"])
+        records = student_record_map[sid]
+        
+        total = len(records)
+        present = sum(1 for r in records if r["status"] == "present")
+        percentage = round((present / total) * 100, 1) if total > 0 else 0
+        
+        # Calculate streaks
+        streak_present = 0
+        streak_absent = 0
+        absence_dates = []
+        
+        counting_present = True
+        counting_absent = True
+        
+        for r in records:
+            if counting_present:
+                if r["status"] == "present":
+                    streak_present += 1
+                else:
+                    counting_present = False
+            
+            if counting_absent:
+                if r["status"] == "absent":
+                    streak_absent += 1
+                    absence_dates.append(r["timestamp"].isoformat() if hasattr(r["timestamp"], "isoformat") else str(r["timestamp"]))
+                else:
+                    counting_absent = False
+            
+            if not counting_present and not counting_absent:
+                break
+        
+        # Add to stats list
+        stats.append({
+            "student_id": sid,
+            "name": s["name"],
+            "roll_number": s["roll_number"],
+            "present_count": present,
+            "total_sessions": total,
+            "percentage": percentage,
+            "streak": streak_present
+        })
+        
+        # Add to alerts list if they have any absence streak
+        if streak_absent >= 1:
+            level = "Email"
+            color = "yellow"
+            action = "Day 1 Intervention (Email)"
+            
+            if streak_absent >= 5:
+                level = "Call Required"
+                color = "red"
+                action = "Day 5 Critical (Phone Call)"
+            elif streak_absent >= 3:
+                level = "SMS"
+                color = "orange"
+                action = "Day 3 Escalation (SMS)"
+            
+            alerts.append({
+                "student_id": sid,
+                "name": s["name"],
+                "roll_number": s["roll_number"],
+                "streak": streak_absent,
+                "level": level,
+                "color": color,
+                "action": action,
+                "history": absence_dates
+            })
+
+    # Sort alerts by streak desc
+    alerts.sort(key=lambda x: x["streak"], reverse=True)
+    
+    return {"stats": stats, "alerts": alerts}
